@@ -3,12 +3,13 @@
 
 	const i18n = getContext('i18n');
 
-	import { settings } from '$lib/stores';
+	import { settings, config as backendConfig } from '$lib/stores';
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import Plus from '$lib/components/icons/Plus.svelte';
 	import Connection from './Connections/Connection.svelte';
+	import CliSessions from './Connections/CliSessions.svelte';
 
 	import AddConnectionModal from '$lib/components/AddConnectionModal.svelte';
 
@@ -27,6 +28,7 @@
 	};
 
 	const updateHandler = async () => {
+		if (!$backendConfig?.features?.enable_direct_connections) return;
 		// Remove trailing slashes
 		config.OPENAI_API_BASE_URLS = config.OPENAI_API_BASE_URLS.map((url) => url.replace(/\/$/, ''));
 
@@ -77,6 +79,8 @@
 	</h2>
 
 	<div class="flex flex-1 min-h-0 flex-col overflow-y-auto scrollbar-hover pr-1.5">
+		<CliSessions />
+		{#if $backendConfig?.features?.enable_direct_connections}
 		{#if config !== null}
 			<section class="space-y-3" aria-labelledby="direct-connections-heading">
 				<div class="flex items-start justify-between gap-3">
@@ -157,8 +161,10 @@
 				</div>
 			</div>
 		{/if}
+		{/if}
 	</div>
 
+	{#if $backendConfig?.features?.enable_direct_connections}
 	<div class="shrink-0 flex justify-end pt-3 text-sm font-normal">
 		<button
 			class="px-3.5 py-1.5 text-sm font-normal bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full"
@@ -167,4 +173,5 @@
 			{$i18n.t('Save')}
 		</button>
 	</div>
+	{/if}
 </form>
