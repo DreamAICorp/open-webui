@@ -1266,6 +1266,7 @@
 					message.content += data.content;
 				} else if (type === 'chat:message' || type === 'replace') {
 					message.content = data.content;
+					if (typeof data.done === 'boolean') message.done = data.done;
 				} else if (type === 'chat:message:files' || type === 'files') {
 					message.files = data.files;
 				} else if (type === 'chat:message:tasks') {
@@ -1551,8 +1552,61 @@
 		}
 	};
 
+	// The cockpit writes through the native history, never through a parallel DOM
+	// or an independent chat snapshot that a later native save could overwrite.
+	let harnessTurnActive = false;
+	const harnessChatBridge = {
+		version: 1,
+		async begin(request: {chatId: string; prompt: string; model: string; name: string}) {
+			if (request.chatId !== $chatId || $temporaryChatEnabled || harnessTurnActive || hasPendingAssistantLeaf()) {
+				throw new Error('Conversation indisponible ou réponse déjà en cours.');
+			}
+			if (!request.prompt?.trim() || !request.model) throw new Error('Tour CLI invalide.');
+			const boundChatId = $chatId;
+			const userId = uuidv4(), assistantId = uuidv4(), parentId = history.currentId;
+			const timestamp = Math.floor(Date.now() / 1000);
+			const messages = {...history.messages};
+			if (parentId && messages[parentId]) messages[parentId] = {...messages[parentId], childrenIds:[...(messages[parentId].childrenIds || []), userId]};
+			messages[userId] = {id:userId,parentId,childrenIds:[assistantId],role:'user',content:request.prompt,timestamp,models:[request.model]};
+			messages[assistantId] = {id:assistantId,parentId:userId,childrenIds:[],role:'assistant',content:'',model:request.model,modelName:request.name,modelIdx:0,timestamp,done:false};
+			history = {...history,messages,currentId:assistantId};
+			harnessTurnActive = true;
+			let boundHistory = history, closed = false;
+			const persistedHistory = {...history,messages:{...history.messages,[assistantId]:{...history.messages[assistantId],content:'Réponse CLI interrompue ou encore en cours dans un autre onglet.',done:true}}};
+			try {
+				const saved = await updateChatById(localStorage.token,boundChatId,{history:persistedHistory,messages:createMessagesList(persistedHistory,persistedHistory.currentId)});
+				if ($chatId === boundChatId) chat = saved;
+			}
+			catch(error) {
+				harnessTurnActive = false;
+				if ($chatId === boundChatId) history = {...history,messages:{...history.messages,[assistantId]:{...history.messages[assistantId],content:'Échec de sauvegarde : aucun appel au moteur effectué.',done:true}}};
+				throw error;
+			}
+			const update = (content: string, done = false) => {
+				if (closed) throw new Error('Tour CLI déjà terminé.');
+				const current = $chatId === boundChatId ? history : boundHistory;
+				boundHistory = {...current,messages:{...current.messages,[assistantId]:{...current.messages[assistantId],content,done}}};
+				if ($chatId === boundChatId) history = boundHistory;
+			};
+			return {
+				update,
+				async finish(content: string) {
+					update(content,true);
+					closed = true;
+					try {
+						// Update only this message; never write an old history after navigation.
+						// This native endpoint also broadcasts the change to other open panes.
+						const result = await fetch(`${WEBUI_API_BASE_URL}/chats/${encodeURIComponent(boundChatId)}/messages/${assistantId}`,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${localStorage.token}`},body:JSON.stringify({content,done:true})});
+						if (!result.ok) throw new Error('Échec de sauvegarde de la réponse CLI.');
+					} finally {harnessTurnActive = false;}
+				}
+			};
+		}
+	};
+
 	onMount(() => {
 		loading = true;
+		(window as any).owvHarnessChat = harnessChatBridge;
 		console.log('mounted');
 		window.addEventListener('message', onMessageHandler);
 		$socket?.on('events', chatEventHandler);
@@ -1630,6 +1684,7 @@
 		init();
 
 		return () => {
+			if ((window as any).owvHarnessChat === harnessChatBridge) delete (window as any).owvHarnessChat;
 			try {
 				clearTimeout(saveControlsTimer);
 				saveControls();
@@ -3089,6 +3144,10 @@
 	};
 
 	const submitHandler = async (userPrompt, { _raw = false } = {}) => {
+		if (harnessTurnActive) {
+			toast.error('Une réponse CLI est déjà en cours.');
+			return;
+		}
 		console.log('submitHandler', userPrompt, $chatId);
 
 		const _selectedModels = selectedModels.map((modelId) =>
