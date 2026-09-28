@@ -1568,7 +1568,7 @@
 			const messages = {...history.messages};
 			if (parentId && messages[parentId]) messages[parentId] = {...messages[parentId], childrenIds:[...(messages[parentId].childrenIds || []), userId]};
 			messages[userId] = {id:userId,parentId,childrenIds:[assistantId],role:'user',content:request.prompt,timestamp,models:[request.model]};
-			messages[assistantId] = {id:assistantId,parentId:userId,childrenIds:[],role:'assistant',content:'',model:request.model,modelName:request.name,modelIdx:0,timestamp,done:false};
+			messages[assistantId] = {id:assistantId,parentId:userId,childrenIds:[],role:'assistant',content:'',statusHistory:[{description:'Préparation de la session…',done:false}],model:request.model,modelName:request.name,modelIdx:0,timestamp,done:false};
 			history = {...history,messages,currentId:assistantId};
 			harnessTurnActive = true;
 			let boundHistory = history, closed = false;
@@ -1582,14 +1582,17 @@
 				if ($chatId === boundChatId) history = {...history,messages:{...history.messages,[assistantId]:{...history.messages[assistantId],content:'Échec de sauvegarde : aucun appel au moteur effectué.',done:true}}};
 				throw error;
 			}
-			const update = (content: string, done = false) => {
+			const change = (fields: Record<string, unknown>) => {
 				if (closed) throw new Error('Tour CLI déjà terminé.');
 				const current = $chatId === boundChatId ? history : boundHistory;
-				boundHistory = {...current,messages:{...current.messages,[assistantId]:{...current.messages[assistantId],content,done}}};
+				boundHistory = {...current,messages:{...current.messages,[assistantId]:{...current.messages[assistantId],...fields}}};
 				if ($chatId === boundChatId) history = boundHistory;
 			};
+			const update = (content: string, done = false) => change({content,done,statusHistory:[]});
+			const status = (description: string) => change({content:'',done:false,statusHistory:[{description,done:false}]});
 			return {
 				update,
+				status,
 				async finish(content: string) {
 					update(content,true);
 					closed = true;
