@@ -40,8 +40,9 @@ test('native state and a recoverable in-progress marker persist before completio
 test('refresh can attach to the persisted assistant message and finish it',async()=>{
  const f=fixture(),p=f.context.bridge.begin(request);f.resolve({id:'A'});const first=await p;
  await first.finish('initial');
- f.context.history.messages['2']={...f.context.history.messages['2'],content:'',done:false};
+ f.context.history.messages['2']={...f.context.history.messages['2'],content:'checkpoint',done:false};
  const resumed=await f.context.bridge.resume({chatId:'A',messageId:'2'});
+ assert.equal(resumed.content,'checkpoint');
  resumed.status('Reprise du travail…');
  await resumed.finish('final after refresh');
  assert.equal(f.context.history.messages['2'].content,'final after refresh');

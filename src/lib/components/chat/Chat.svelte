@@ -1586,7 +1586,7 @@
 			const message = history.messages[request.messageId];
 			if (!message || message.role !== 'assistant') throw new Error('Réponse Codex à reprendre introuvable.');
 			harnessTurnActive = true;
-			return harnessTurn($chatId,request.messageId);
+			return {...harnessTurn($chatId,request.messageId),content:message.content || ''};
 		},
 		async resumeLatest(request: {chatId: string}) {
 			if (request.chatId !== $chatId || $temporaryChatEnabled || harnessTurnActive) throw new Error('Conversation indisponible ou réponse déjà suivie.');
