@@ -1588,6 +1588,14 @@
 			harnessTurnActive = true;
 			return harnessTurn($chatId,request.messageId);
 		},
+		async resumeLatest(request: {chatId: string}) {
+			if (request.chatId !== $chatId || $temporaryChatEnabled || harnessTurnActive) throw new Error('Conversation indisponible ou réponse déjà suivie.');
+			const messageId = history.currentId;
+			const message = history.messages[messageId];
+			if (!messageId || !message || message.role !== 'assistant') throw new Error('Dernière réponse Codex introuvable.');
+			harnessTurnActive = true;
+			return {...harnessTurn($chatId,messageId),content:message.content || ''};
+		},
 		async begin(request: {chatId: string; prompt: string; model: string; name: string}) {
 			if (request.chatId !== $chatId || $temporaryChatEnabled || harnessTurnActive || hasPendingAssistantLeaf()) {
 				throw new Error('Conversation indisponible ou réponse déjà en cours.');

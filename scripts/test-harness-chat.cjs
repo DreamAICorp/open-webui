@@ -47,6 +47,14 @@ test('refresh can attach to the persisted assistant message and finish it',async
  assert.equal(f.context.history.messages['2'].content,'final after refresh');
  assert.equal(f.calls.at(-1).url,'/api/v1/chats/A/messages/2');
 });
+test('an active goal without local pending metadata can resume the latest assistant message',async()=>{
+ const f=fixture(),p=f.context.bridge.begin(request);f.resolve({id:'A'});const first=await p;
+ await first.finish('checkpoint');
+ const resumed=await f.context.bridge.resumeLatest({chatId:'A'});
+ assert.equal(resumed.messageId,'2');assert.equal(resumed.content,'checkpoint');
+ resumed.update('checkpoint\n\ncontinued');await resumed.finish('checkpoint\n\ncontinued');
+ assert.equal(f.context.history.messages['2'].content,'checkpoint\n\ncontinued');
+});
 test('navigation during failed initial save never injects A into B',async()=>{
  const f=fixture(),p=f.context.bridge.begin(request);f.context.$chatId='B';f.context.history={messages:{},currentId:null};f.reject(Error('disk'));
  await assert.rejects(p,/disk/);assert.deepEqual(f.context.history,{messages:{},currentId:null});
