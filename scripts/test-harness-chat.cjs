@@ -21,13 +21,25 @@ function fixture(){
  return {context,calls,resolve,reject};
 }
 const request={chatId:'A',prompt:'hello',name:'Codex',model:'test-model'};
-test('native state streams, while persisted placeholder cannot block reload',async()=>{
+test('native state and a recoverable in-progress marker persist before completion',async()=>{
  const f=fixture(),p=f.context.bridge.begin(request);f.resolve({id:'A'});const turn=await p;
  assert.equal(f.context.history.messages['2'].done,false);
- assert.equal(f.calls[0].body.history.messages['2'].done,true);
+ assert.equal(turn.messageId,'2');
+ assert.equal(f.calls[0].body.history.messages['2'].done,false);
+ assert.equal(f.calls[0].body.history.messages['2'].statusHistory[0].description,'Travail Codex en cours…');
  turn.update('partial');assert.equal(f.context.history.messages['2'].content,'partial');
  await turn.finish('final');assert.equal(f.context.history.messages['2'].done,true);
- assert.equal(f.calls[1].url,'/api/v1/chats/A/messages/2');assert.deepEqual(JSON.parse(f.calls[1].options.body),{content:'final',done:true});
+ assert.equal(f.calls[1].url,'/api/v1/chats/A/messages/2');assert.deepEqual(JSON.parse(f.calls[1].options.body),{content:'final',done:true,statusHistory:[]});
+});
+test('refresh can attach to the persisted assistant message and finish it',async()=>{
+ const f=fixture(),p=f.context.bridge.begin(request);f.resolve({id:'A'});const first=await p;
+ await first.finish('initial');
+ f.context.history.messages['2']={...f.context.history.messages['2'],content:'',done:false};
+ const resumed=await f.context.bridge.resume({chatId:'A',messageId:'2'});
+ resumed.status('Reprise du travail…');
+ await resumed.finish('final after refresh');
+ assert.equal(f.context.history.messages['2'].content,'final after refresh');
+ assert.equal(f.calls.at(-1).url,'/api/v1/chats/A/messages/2');
 });
 test('navigation during failed initial save never injects A into B',async()=>{
  const f=fixture(),p=f.context.bridge.begin(request);f.context.$chatId='B';f.context.history={messages:{},currentId:null};f.reject(Error('disk'));
