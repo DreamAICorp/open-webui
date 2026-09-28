@@ -1166,6 +1166,12 @@ class ChatTable:
                 history = chat.get('history', {})
                 saved_message = self.upsert_message_to_history(history, message_id, message)
                 chat['history'] = history
+                # Keep the legacy linear snapshot consistent with the canonical
+                # history. Older clients and refresh paths still read this list.
+                for index, listed_message in enumerate(chat.get('messages', [])):
+                    if listed_message.get('id') == message_id:
+                        chat['messages'][index] = {**listed_message, **message}
+                        break
                 chat_item.chat = chat  # chat is a fresh dict when the column was empty
                 chat_item.title = self._clean_null_bytes(chat.get('title', 'New Chat'))
                 chat_item.current_message_id = self.get_current_message_id(chat)

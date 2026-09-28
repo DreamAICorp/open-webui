@@ -1,6 +1,12 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const ts=require(process.env.TYPESCRIPT_PATH||'typescript');
 const src=fs.readFileSync(require('node:path').join(__dirname,'../src/lib/components/chat/Chat.svelte'),'utf8');
+const router=fs.readFileSync(require('node:path').join(__dirname,'../backend/open_webui/routers/chats.py'),'utf8');
+const model=fs.readFileSync(require('node:path').join(__dirname,'../backend/open_webui/models/chats.py'),'utf8');
+test('targeted completion keeps canonical history and refresh snapshot consistent',()=>{
+ assert.match(router,/statusHistory: list\[dict\] \| None = None/);
+ assert.match(model,/chat\['messages'\]\[index\] = \{\*\*listed_message, \*\*message\}/);
+});
 test('native message event receives completion without changing legacy content-only semantics',()=>{
  const start=src.indexOf("} else if (type === 'chat:message' || type === 'replace') {");
  const body=src.slice(src.indexOf('{',start)+1,src.indexOf("} else if (type === 'chat:message:files'",start));
