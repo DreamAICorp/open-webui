@@ -3202,6 +3202,20 @@
 			return;
 		}
 
+		if (nativeHarness) {
+			await nativeHarness.ready;
+			const controls = nativeHarness.controls;
+			if (controls && controls.selected($chatId || 'new') !== 'owv') {
+				if ($temporaryChatEnabled) { toast.error('Enregistre cette conversation avant de lancer un CLI.'); return; }
+				if (files.some(file=>!file.id || file.status === 'uploading' || file.status === 'error')) { toast.error('Attends la fin du téléversement des pièces jointes.'); return; }
+				if (!$chatId) {
+					await initChatHandler(history);
+					controls.promoteDraft($chatId);
+				}
+				await controls.submit($chatId, String(userPrompt), () => { clearCommandInput(); files = []; }, [...files]);
+				return;
+			}
+		}
         if (hermesAgent) {
             if ($temporaryChatEnabled) { toast.error('Enregistre la conversation avant de contacter un agent.'); return; }
             if (files.length) { toast.error('Les pièces jointes Hermès ne sont pas encore prises en charge.'); return; }
@@ -3230,20 +3244,6 @@
             return;
         }
 
-		if (nativeHarness) {
-			await nativeHarness.ready;
-			const controls = nativeHarness.controls;
-			if (controls && controls.selected($chatId || 'new') !== 'owv') {
-				if ($temporaryChatEnabled) { toast.error('Enregistre cette conversation avant de lancer un CLI.'); return; }
-				if (files.some(file=>!file.id || file.status === 'uploading' || file.status === 'error')) { toast.error('Attends la fin du téléversement des pièces jointes.'); return; }
-				if (!$chatId) {
-					await initChatHandler(history);
-					controls.promoteDraft($chatId);
-				}
-				await controls.submit($chatId, String(userPrompt), () => { clearCommandInput(); files = []; }, [...files]);
-				return;
-			}
-		}
 		console.log('submitHandler', userPrompt, $chatId);
 
 		const _selectedModels = selectedModels.map((modelId) =>

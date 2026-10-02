@@ -590,12 +590,48 @@
     const connectionMenu = d.createElement("div");
     connectionMenu.className = menu.className;
     connectionMenu.style.cssText = "display:none;position:fixed;z-index:10000";
+    let closeAccountDialog = () => {};
+    const connectCompanyAccount = () => {
+      closeAccountDialog();
+      const overlay=d.createElement("div"),panel=d.createElement("section");
+      overlay.style.cssText="position:fixed;inset:0;z-index:10002;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.6);padding:1rem";
+      panel.className="w-full max-w-lg rounded-2xl border bg-white p-6 text-gray-900 shadow-2xl dark:border-gray-700 dark:bg-gray-900 dark:text-white";
+      panel.setAttribute("role","dialog");panel.setAttribute("aria-modal","true");panel.setAttribute("aria-label","Connecter Codex à cette agence");
+      const title=d.createElement("h2"),help=d.createElement("p"),status=d.createElement("p"),code=d.createElement("code"),link=d.createElement("a"),start=d.createElement("button"),close=d.createElement("button");
+      title.textContent="Compte Codex de cette agence";title.className="mb-3 text-lg font-semibold";
+      help.textContent="Connectez le compte ChatGPT autorisé pour cette agence. La connexion reste dans son runtime dédié.";help.className="mb-4 text-sm";
+      status.setAttribute("role","status");status.className="my-3 text-sm";
+      code.className="my-3 block text-xl font-semibold";link.textContent="Ouvrir la connexion ChatGPT";link.className="my-3 block underline";link.target="_blank";link.rel="noopener noreferrer";link.hidden=true;
+      start.type="button";start.textContent="Se connecter avec ChatGPT";start.className="mr-3 rounded-xl border px-3 py-2 text-sm";
+      close.type="button";close.textContent="Fermer";close.className="rounded-xl border px-3 py-2 text-sm";
+      let closed=false,connected=false,loginId=null,timer=null;
+      const stop=()=>{if(closed)return;closed=true;clearTimeout(timer);overlay.remove();if(loginId&&!connected)void json("/cockpit-sessions/v1/account/codex/cancel",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({loginId})}).catch(()=>{});};
+      closeAccountDialog=stop;close.onclick=stop;overlay.addEventListener("keydown",event=>{if(event.key==="Escape")stop();});
+      const poll=async()=>{
+        if(closed)return;
+        try{const account=await json("/cockpit-sessions/v1/account/codex/status");
+          if(closed)return;
+          if(account.connected){connected=true;status.textContent="Compte connecté. Vous pouvez sélectionner un modèle payant.";setConnection(chat,"codex","company-codex");connection.dataset.label="Codex · "+(account.email||"Compte de l’agence");label();return;}
+          timer=setTimeout(poll,3000);
+        }catch{if(!closed)status.textContent="La vérification est indisponible. Fermez puis réessayez.";}
+      };
+      start.onclick=async()=>{
+        start.disabled=true;status.textContent="Préparation de la connexion…";
+        try{const result=await json("/cockpit-sessions/v1/account/codex/login",{method:"POST",headers:{"content-type":"application/json"},body:"{}"});
+          if(result.verificationUrl!=="https://auth.openai.com/codex/device"||typeof result.loginId!=="string"||!result.loginId||!/^[A-Z0-9-]{4,20}$/.test(result.userCode||""))throw Error("Réponse de connexion invalide");
+          loginId=result.loginId;
+          if(closed){void json("/cockpit-sessions/v1/account/codex/cancel",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({loginId})}).catch(()=>{});return;}
+          code.textContent=result.userCode;link.href=result.verificationUrl;link.hidden=false;status.textContent="Ouvrez ChatGPT et saisissez ce code pour autoriser la connexion.";void poll();
+        }catch(error){if(!closed){status.textContent=error.message;start.disabled=false;}}
+      };
+      panel.append(title,help,status,code,link,start,close);overlay.append(panel);d.body.append(overlay);start.focus();
+    };
     const showConnections = async (event) => {
       event.preventDefault();event.stopPropagation();if(!["codex","claude"].includes(harness(chat)))return;
       if(connectionMenu.style.display==="block"){connectionMenu.style.display="none";return;}
       connectionMenu.textContent="Chargement\u2026";connectionMenu.style.visibility="hidden";connectionMenu.style.display="block";
       const position=()=>{const rect=connection.getBoundingClientRect(),viewport=d.defaultView;connectionMenu.style.left=Math.min(Math.max(8,rect.left),viewport.innerWidth-connectionMenu.offsetWidth-8)+"px";connectionMenu.style.top=(rect.bottom+connectionMenu.offsetHeight+8<=viewport.innerHeight?rect.bottom+8:Math.max(8,rect.top-connectionMenu.offsetHeight-8))+"px";connectionMenu.style.visibility="visible";};position();
-      try{const response=await json("/cockpit-sessions/v1/connections?harness="+encodeURIComponent(harness(chat))),items=response.items||[];connectionMenu.replaceChildren(...items.map(item=>{const option=d.createElement("button");option.type="button";option.className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm font-medium hover:bg-gray-100 dark:hover:bg-gray-800";const title=d.createElement("span");title.className="min-w-0 flex-1 truncate";title.textContent=item.label;option.append(title);if(item.id===selectedConnection(chat,harness(chat))){const check=d.createElement("span");check.textContent="\u2713";check.className="text-violet-500";option.append(check);}option.onclick=e=>{e.preventDefault();e.stopPropagation();setConnection(chat,harness(chat),item.id);connection.dataset.label=item.label;label();connectionMenu.style.display="none";toast("Session s\u00e9lectionn\u00e9e : la prochaine r\u00e9ponse utilisera "+item.label+".");};return option;}));if(!items.length)connectionMenu.textContent="Aucune session disponible";position();}catch(error){connectionMenu.textContent=error.message;position();}
+      try{const response=await json("/cockpit-sessions/v1/connections?harness="+encodeURIComponent(harness(chat))),items=response.items||[];connectionMenu.replaceChildren(...items.map(item=>{const option=d.createElement("button");option.type="button";option.className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm font-medium hover:bg-gray-100 dark:hover:bg-gray-800";const title=d.createElement("span");title.className="min-w-0 flex-1 truncate";title.textContent=item.label;option.append(title);if(item.id===selectedConnection(chat,harness(chat))){const check=d.createElement("span");check.textContent="\u2713";check.className="text-violet-500";option.append(check);}option.onclick=e=>{e.preventDefault();e.stopPropagation();setConnection(chat,harness(chat),item.id);connection.dataset.label=item.label;label();connectionMenu.style.display="none";toast("Session s\u00e9lectionn\u00e9e : la prochaine r\u00e9ponse utilisera "+item.label+".");};return option;}));if(!items.length)connectionMenu.textContent="Aucune session disponible";if(response.canConnect&&harness(chat)==="codex"){const connect=d.createElement("button");connect.type="button";connect.className="flex w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800";connect.textContent="Connecter le compte Codex de cette agence";connect.onclick=()=>{connectionMenu.style.display="none";connectCompanyAccount();};connectionMenu.append(connect);}position();}catch(error){connectionMenu.textContent=error.message;position();}
     };
     connection.addEventListener("click",showConnections,true);connection.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" ")void showConnections(event);},true);
     execution.addEventListener("click",async event=>{
@@ -709,7 +745,7 @@
         run(f, input);
       }
     }, options);
-    mounts.set(d,{chat,native,dispose(){lifecycle.abort();d.querySelectorAll("[data-owv-request-chat]").forEach(panel=>{if(panel.dataset.owvRequestChat===chat)panel.remove();});b.remove();connection.remove();execution.remove();menu.remove();connectionMenu.remove();modelMenu.remove();
+    mounts.set(d,{chat,native,dispose(){closeAccountDialog();lifecycle.abort();d.querySelectorAll("[data-owv-request-chat]").forEach(panel=>{if(panel.dataset.owvRequestChat===chat)panel.remove();});b.remove();connection.remove();execution.remove();menu.remove();connectionMenu.remove();modelMenu.remove();
       delete host.dataset.owvComposerControls;
       if(nativeText){if(nativeTextStyle===null)nativeText.removeAttribute('style');else if(nativeTextStyle!==undefined)nativeText.setAttribute('style',nativeTextStyle);}
       if(nativeTitle===null)native.removeAttribute('title');else native.setAttribute('title',nativeTitle);
