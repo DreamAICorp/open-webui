@@ -1403,6 +1403,7 @@ class MessageForm(BaseModel):
     content: str
     done: bool | None = None
     statusHistory: list[dict] | None = None
+    cliActivities: list[dict] | None = None
 
 
 @router.post('/{id}/messages/{message_id}', response_model=ChatResponse | None)
@@ -1435,6 +1436,7 @@ async def update_chat_message_by_id(
             'content': form_data.content,
             **({'done': form_data.done} if form_data.done is not None else {}),
             **({'statusHistory': form_data.statusHistory} if form_data.statusHistory is not None else {}),
+            **({'cliActivities': form_data.cliActivities} if form_data.cliActivities is not None else {}),
         },
     )
 
@@ -1457,6 +1459,7 @@ async def update_chat_message_by_id(
                     'content': form_data.content,
                     **({'done': form_data.done} if form_data.done is not None else {}),
                     **({'statusHistory': form_data.statusHistory} if form_data.statusHistory is not None else {}),
+            **({'cliActivities': form_data.cliActivities} if form_data.cliActivities is not None else {}),
                 },
             }
         )

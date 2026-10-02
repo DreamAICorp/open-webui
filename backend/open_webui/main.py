@@ -147,6 +147,7 @@ from open_webui.models.messages import Messages
 from open_webui.models.models import Models, normalize_model_tags
 from open_webui.models.users import Users
 from open_webui.routers import (
+    hermes,
     analytics,
     audio,
     auths,
@@ -859,6 +860,9 @@ app.include_router(users.router, prefix='/api/v1/users', tags=['users'])
 
 app.include_router(channels.router, prefix='/api/v1/channels', tags=['channels'])
 app.include_router(chats.router, prefix='/api/v1/chats', tags=['chats'])
+from open_webui.utils.hermes_chat_scope import HermesChatScopeMiddleware
+app.add_middleware(HermesChatScopeMiddleware)
+app.include_router(hermes.router, prefix='/api/v1/hermes', tags=['hermes'])
 app.include_router(notes.router, prefix='/api/v1/notes', tags=['notes'])
 
 

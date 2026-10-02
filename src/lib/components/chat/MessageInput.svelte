@@ -30,6 +30,8 @@
 		models,
 		config,
 		showCallOverlay,
+		voiceBackground,
+		voiceFeedback,
 		tools,
 		skills,
 		terminalSkills,
@@ -79,7 +81,7 @@
 
 	import InputMenu from './MessageInput/InputMenu.svelte';
 	import VoiceRecording from './MessageInput/VoiceRecording.svelte';
-	import ModelSelector from './ModelSelector.svelte';
+	import ChatSelectorBar from './ChatSelectorBar.svelte';
 
 	import ToolServersModal from './ToolServersModal.svelte';
 	import SkillsModal from './SkillsModal.svelte';
@@ -149,6 +151,7 @@
 
 	export let atSelectedModel: Model | undefined = undefined;
 	export let selectedModels: [''];
+	export let hermesAgent = '';
 
 	let selectedModelIds = [];
 	$: selectedModelIds = atSelectedModel !== undefined ? [atSelectedModel.id] : selectedModels;
@@ -915,15 +918,25 @@
 		);
 	};
 
+	let cliUploadsEnabled = false;
+	const refreshCliUploads = () => {
+		const selected = typeof window !== 'undefined' ? (window as any).owvNativeHarness?.controls?.selected(chatId || 'new') : null;
+		cliUploadsEnabled = !!selected && selected !== 'owv';
+	};
+	$: { chatId; refreshCliUploads(); }
+	onMount(() => { refreshCliUploads(); window.addEventListener('owv:cli-selection', refreshCliUploads); return () => window.removeEventListener('owv:cli-selection', refreshCliUploads); });
+
 	const uploadFileHandler = async (file, process = true, itemData = {}) => {
 		if ($_user?.role !== 'admin' && !($_user?.permissions?.chat?.file_upload ?? true)) {
 			toast.error($i18n.t('You do not have permission to upload files.'));
 			return null;
 		}
 
-		const filesystemUploadTerminal = getFilesystemUploadTerminal();
+		const cliSelected = (window as any).owvNativeHarness?.controls?.selected(chatId || 'new') && (window as any).owvNativeHarness.controls.selected(chatId || 'new') !== 'owv';
+		const filesystemUploadTerminal = cliSelected ? null : getFilesystemUploadTerminal();
+		if (cliSelected) process = false;
 
-		if (!filesystemUploadTerminal && fileUploadCapableModels.length !== selectedModelIds.length) {
+		if (!cliSelected && !filesystemUploadTerminal && fileUploadCapableModels.length !== selectedModelIds.length) {
 			toast.error($i18n.t('Model(s) do not support file upload'));
 			return null;
 		}
@@ -1124,7 +1137,7 @@
 			}
 
 			if (isRasterImageContentType(file['type'])) {
-				if (visionCapableModels.length === 0) {
+				if (!cliUploadsEnabled && visionCapableModels.length === 0) {
 					toast.error($i18n.t('Selected model(s) do not support image inputs'));
 					return;
 				}
@@ -1751,12 +1764,25 @@
 								await tick();
 								focus({ preventScroll: true });
 
-								if ($settings?.speechAutoSend ?? false) {
+								if (($settings?.speechAutoSend ?? false) || ($settings?.audio?.stt?.continuous ?? false)) {
 									dispatch('submit', prompt);
 								}
 							}}
 						/>
 					</div>
+                    {#if $voiceBackground && $showCallOverlay}
+                        <div class="voice-feedback" data-testid="voice-feedback">
+                            <div class="voice-spectrum" aria-hidden="true">
+                                {#each $voiceFeedback.bins as level}
+                                    <span style:height={`${3 + level * 25}px`}></span>
+                                {/each}
+                            </div>
+                            <span class="voice-phase" role="status" aria-live="polite">
+                                {$voiceFeedback.phase === 'transcribing' ? 'Transcription STT…' : $voiceFeedback.phase === 'thinking' ? 'Réflexion du modèle…' : $voiceFeedback.phase === 'speaking' ? 'Réponse vocale…' : $voiceFeedback.phase === 'muted' ? 'Micro en pause' : $voiceFeedback.phase === 'error' ? $voiceFeedback.error : 'Écoute en cours'}
+                            </span>
+                            {#if $voiceFeedback.pending > 0}<span class="voice-pending">{$voiceFeedback.pending} en attente</span>{/if}
+                        </div>
+                    {/if}
 					<form
 						class="w-full flex flex-col gap-1.5 {recording ? 'hidden' : ''}"
 						on:submit|preventDefault={() => {
@@ -1901,6 +1927,9 @@
 								: ''}  transition px-0.5 bg-white/5 dark:bg-gray-500/5 backdrop-blur-sm dark:text-gray-100"
 							dir={$settings?.chatDirection ?? 'auto'}
 						>
+							<div data-owv-composer-controls class="w-full min-w-0 px-2 pt-1.5">
+								<ChatSelectorBar bind:this={modelSelector} bind:selectedModels bind:hermesAgent disabled={generating} showSetDefault={!history?.currentId} />
+							</div>
 							{#if atSelectedModel !== undefined}
 								<div class="px-2.5 pt-2.5 text-left w-full flex flex-col z-10">
 									<div class="flex items-center justify-between w-full">
@@ -1946,7 +1975,7 @@
 														alt=""
 														imageClassName=" size-10 rounded-xl object-cover"
 													/>
-													{#if selectedModelIds.length !== visionCapableModels.length}
+													{#if !cliUploadsEnabled && selectedModelIds.length !== visionCapableModels.length}
 														<Tooltip
 															className=" absolute top-1 left-1"
 															content={$i18n.t('{{ models }}', {
@@ -2225,7 +2254,7 @@
 									<InputMenu
 										bind:files
 										selectedModels={selectedModelIds}
-										fileUploadCapableModels={getFilesystemUploadTerminal(
+										fileUploadCapableModels={cliUploadsEnabled || getFilesystemUploadTerminal(
 											$selectedTerminalId,
 											$terminalServers,
 											$settings
@@ -2573,15 +2602,8 @@
 								</div>
 
 								<div class="self-end flex space-x-1 mr-1 min-w-0 gap-[0.03125rem]">
-									<div class="flex min-w-0 max-w-[10rem] items-center sm:max-w-[13rem]">
-										<ModelSelector
-											bind:this={modelSelector}
-											bind:selectedModels
-											showSetDefault={!history?.currentId}
-											placement="auto"
-											align="end"
-											triggerClassName="items-center gap-1.5 rounded-lg pl-2 pr-1.5 py-1 text-[0.8125rem] font-normal text-gray-600 transition-colors duration-100 hover:bg-gray-50/40 hover:text-gray-700 dark:text-gray-300 dark:hover:bg-gray-800/40 dark:hover:text-gray-200"
-										/>
+									<div class="flex min-w-0 w-full items-center">
+										
 									</div>
 
 									{#if hasChatVariables}
@@ -2665,6 +2687,30 @@
 														<Mic className="size-[1.125rem]" />
 													</button>
 												</Tooltip>
+
+								<Tooltip content="Conversation vocale continue, chat visible">
+                                <button type="button" id="voice-continuous-button"
+                                    aria-label="Conversation vocale continue" aria-pressed={$voiceBackground && $showCallOverlay}
+                                    class="transition rounded-full p-1.5 self-center mr-0.5 {$voiceBackground && $showCallOverlay ? 'text-green-500 bg-green-500/10' : 'text-gray-600 dark:text-gray-300'}"
+                                    on:click={() => {
+                                        if ($voiceBackground && $showCallOverlay) { showCallOverlay.set(false); voiceBackground.set(false); }
+                                        else { voiceBackground.set(true); showControls.set(false); showCallOverlay.set(true); }
+                                    }}><span aria-hidden="true" class="text-xl leading-5">∞</span></button>
+                            </Tooltip>
+                            <Tooltip content={$i18n.t("Audio settings")}>
+									<a
+										id="voice-audio-settings-button"
+                                        data-sveltekit-reload
+										href="?settings=audio"
+										class="text-gray-600 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-200 transition rounded-full p-1.5 self-center mr-0.5"
+										aria-label={$i18n.t("Audio settings")}
+
+									>
+										<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" class="size-[1.125rem]">
+											<path stroke-linecap="round" stroke-linejoin="round" d="M10.5 6h10.125M3.375 6h3.375m3.75 12h10.125m-17.25 0H6.75m3.75-6h10.125m-17.25 0H6.75M6.75 3.75v4.5m0 7.5v4.5m3.75-10.5v4.5" />
+										</svg>
+									</a>
+								</Tooltip>
 											{/if}
 										{/if}
 
@@ -2716,7 +2762,8 @@
 																	}
 																}
 
-																showCallOverlay.set(true);
+																voiceBackground.set(false);
+                                                        showCallOverlay.set(true);
 																showControls.set(true);
 															} catch (err) {
 																// If the user denies the permission or an error occurs, show an error message
@@ -2784,3 +2831,11 @@
 		</div>
 	</div>
 {/if}
+
+<style>
+    .voice-feedback{display:flex;align-items:center;gap:12px;min-height:40px;padding:5px 12px;margin:0 4px 6px;border-radius:12px;background:rgba(128,128,128,.08);flex-wrap:wrap}
+    .voice-spectrum{display:flex;align-items:center;gap:2px;height:28px;flex:0 1 126px;overflow:hidden}
+    .voice-spectrum span{display:block;width:2px;flex-shrink:0;border-radius:2px;background:#8b8bf5;transition:height 80ms linear}
+    .voice-phase,.voice-pending{font-size:12px;line-height:1.4}.voice-pending{opacity:.65}
+    @media(prefers-reduced-motion:reduce){.voice-spectrum span{transition:none}}
+</style>

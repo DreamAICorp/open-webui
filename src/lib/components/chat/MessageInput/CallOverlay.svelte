@@ -1,12 +1,12 @@
 <script lang="ts">
-	import { config, models, settings, showCallOverlay, TTSWorker } from '$lib/stores';
+	import { config, models, settings, voiceFeedback, showCallOverlay, showSettings, TTSWorker } from '$lib/stores';
 	import { onMount, tick, getContext, onDestroy, createEventDispatcher } from 'svelte';
 
 	const dispatch = createEventDispatcher();
 
 	import { blobToFile } from '$lib/utils';
 	import { generateEmoji } from '$lib/apis';
-	import { synthesizeOpenAISpeech, transcribeAudio } from '$lib/apis/audio';
+	import { synthesizeOpenAISpeech, transcribeAudio, transcribeCliViewerAudio } from '$lib/apis/audio';
 
 	import { toast } from 'svelte-sonner';
 
@@ -24,7 +24,37 @@
 	export let chatId;
 	export let modelId;
 
+    let transcribing = false;
+    let voiceError = '';
+    let audioBins = Array(32).fill(0);
+    let segmentQueue: Blob[] = [];
+    let draining = false;
+    let analysisContext: AudioContext | null = null;
+    let analysisFrame = 0;
+    let lastFeedbackAt = 0;
+    $: voiceFeedback.set({phase: voiceError ? 'error' : transcribing ? 'transcribing' : chatStreaming ? 'thinking' : assistantSpeaking ? 'speaking' : muted ? 'muted' : 'listening', bins: audioBins, pending: segmentQueue.length, error: voiceError});
+    async function drainSegments() {
+        if (draining) return;
+        draining = true;
+        try {
+            while (segmentQueue.length && voiceSessionActive && $showCallOverlay) {
+                while (chatStreaming && voiceSessionActive && $showCallOverlay) await new Promise(r => setTimeout(r, 100));
+                if (!voiceSessionActive || !$showCallOverlay) break;
+                const blob = segmentQueue[0];
+                segmentQueue = segmentQueue.slice(1);
+                loading = true;
+                try { await transcribeHandler(blob); }
+                catch (error) { voiceError = 'Échec du traitement audio. Réessaie.'; console.error(error); }
+                finally { loading = false; }
+            }
+        } finally { draining = false; }
+    }
 	let wakeLock = null;
+    const ownerChatId = chatId;
+    let voiceSessionActive = true;
+    let voiceChannel: BroadcastChannel | null = null;
+    $: if (ownerChatId && chatId !== ownerChatId) { voiceSessionActive = false; showCallOverlay.set(false); }
+
 
 	let model = null;
 
@@ -162,18 +192,21 @@
 		}
 
 		await tick();
-		const file = blobToFile(audioBlob, 'recording.wav');
+		const file = blobToFile(audioBlob, audioBlob.type.includes('mp4') ? 'recording.mp4' : audioBlob.type.includes('ogg') ? 'recording.ogg' : 'recording.webm');
 
-		const res = await transcribeAudio(
-			localStorage.token,
-			file,
-			$settings?.audio?.stt?.language
-		).catch((error) => {
-			toast.error(`${error}`);
+		const requestChatId = chatId;
+        transcribing = true; voiceError = "";
+        const res = await (($settings?.audio?.stt?.source ?? 'cliviewer') === 'cliviewer'
+            ? transcribeCliViewerAudio(localStorage.token, file, $settings?.audio?.stt?.language, $settings?.audio?.stt?.mode ?? 'auto')
+            : transcribeAudio(localStorage.token, file, $settings?.audio?.stt?.language)).catch((error) => {
+			voiceError = "Transcription indisponible. Réessaie.";
+            toast.error(voiceError);
 			return null;
 		});
 
-		if (res) {
+        transcribing = false;
+        if (res && !res.text?.trim()) voiceError = "Aucune parole reconnue. Réessaie.";
+		if (res && voiceSessionActive && $showCallOverlay && chatId === requestChatId) {
 			console.log(res.text);
 
 			if (res.text !== '') {
@@ -183,55 +216,30 @@
 		}
 	};
 
-	const stopRecordingCallback = async (_continue = true) => {
-		if ($showCallOverlay) {
-			console.log('%c%s', 'color: red; font-size: 20px;', '🚨 stopRecordingCallback 🚨');
-
-			// deep copy the audioChunks array
-			const _audioChunks = audioChunks.slice(0);
-
-			audioChunks = [];
-			mediaRecorder = false;
-
-			if (_continue) {
-				startRecording();
-			}
-
-			if (confirmed) {
-				loading = true;
-				emoji = null;
-
-				if (cameraStream) {
-					const imageUrl = takeScreenshot();
-
-					files = [
-						{
-							type: 'image',
-							url: imageUrl
-						}
-					];
-				}
-
-				const audioBlob = new Blob(_audioChunks, { type: 'audio/wav' });
-				await transcribeHandler(audioBlob);
-
-				confirmed = false;
-				loading = false;
-			}
-		} else {
-			audioChunks = [];
-			mediaRecorder = false;
-
-			if (audioStream) {
-				const tracks = audioStream.getTracks();
-				tracks.forEach((track) => track.stop());
-			}
-			audioStream = null;
-		}
-	};
+    const stopRecordingCallback = async (_continue = true) => {
+        // Capture the completed segment before the next recorder resets its flags.
+        const chunks = audioChunks.slice();
+        const shouldSubmit = confirmed;
+        confirmed = false;
+        audioChunks = [];
+        mediaRecorder = null;
+        cancelAnimationFrame(analysisFrame);
+        if (analysisContext) { void analysisContext.close(); analysisContext = null; }
+        if (!$showCallOverlay || !voiceSessionActive) {
+            audioStream?.getTracks().forEach(track => track.stop());
+            audioStream = null;
+            return;
+        }
+        if (shouldSubmit && chunks.length) {
+            if (cameraStream) files = [{type: 'image', url: takeScreenshot()}];
+            segmentQueue = [...segmentQueue, new Blob(chunks, {type: chunks[0].type || 'audio/webm'})];
+            void drainSegments();
+        }
+        if (_continue) await startRecording();
+    };
 
 	const startRecording = async () => {
-		if ($showCallOverlay) {
+		if ($showCallOverlay && voiceSessionActive) {
 			if (!audioStream) {
 				audioStream = await navigator.mediaDevices.getUserMedia({
 					audio: {
@@ -246,6 +254,7 @@
 				// hardware track muting disabled to prevent backend translation errors with malformed WebM files
 			}
 
+            if (!voiceSessionActive || !$showCallOverlay) { audioStream?.getTracks().forEach(t => t.stop()); audioStream = null; return; }
 			mediaRecorder = new MediaRecorder(audioStream);
 
 			mediaRecorder.onstart = () => {
@@ -298,6 +307,8 @@
 
 	const analyseAudio = (stream) => {
 		const audioContext = new AudioContext();
+        void audioContext.resume().catch(() => { voiceError = "Analyse audio suspendue : réactive le micro."; });
+        analysisContext = audioContext;
 		const audioStreamSource = audioContext.createMediaStreamSource(stream);
 
 		const analyser = audioContext.createAnalyser();
@@ -340,7 +351,17 @@
 				}
 
 				// Check if initial speech/noise has started
-				const hasSound = domainData.some((value) => value > 0);
+				const hasSound = !muted && !(assistantSpeaking && !($settings?.voiceInterruption ?? false)) && rmsLevel > 0.008;
+                if (performance.now() - lastFeedbackAt > 80) {
+                    lastFeedbackAt = performance.now();
+                    audioBins = Array.from({length:32}, (_,i) => {
+                        const lo = Math.max(1, Math.floor(80 * Math.pow(60, i / 32) * analyser.fftSize / audioContext.sampleRate));
+                        const hi = Math.min(domainData.length, Math.max(lo + 1, Math.ceil(80 * Math.pow(60, (i + 1) / 32) * analyser.fftSize / audioContext.sampleRate)));
+                        let peak = 0;
+                        for (let k = lo; k < hi; k++) peak = Math.max(peak, domainData[k]);
+                        return Math.min(1, peak / 255);
+                    });
+                }
 				if (hasSound) {
 					// BIG RED TEXT
 					console.log('%c%s', 'color: red; font-size: 20px;', '🔊 Sound detected');
@@ -350,7 +371,7 @@
 
 					if (!hasStartedSpeaking) {
 						hasStartedSpeaking = true;
-						stopAllAudio();
+						if (!chatStreaming || ($settings?.voiceInterruption ?? false)) stopAllAudio();
 					}
 
 					lastSoundTime = Date.now();
@@ -369,10 +390,10 @@
 					}
 				}
 
-				window.requestAnimationFrame(processFrame);
+				analysisFrame = window.requestAnimationFrame(processFrame);
 			};
 
-			window.requestAnimationFrame(processFrame);
+			analysisFrame = window.requestAnimationFrame(processFrame);
 		};
 
 		detectSound();
@@ -414,8 +435,10 @@
 							currentUtterance.voice = voice;
 						}
 
+						assistantSpeaking = true;
 						speechSynthesis.speak(currentUtterance);
 						currentUtterance.onend = async (e) => {
+                            assistantSpeaking = false;
 							await new Promise((r) => setTimeout(r, 200));
 							resolve(e);
 						};
@@ -444,6 +467,7 @@
 					}
 
 					settled = true;
+                    assistantSpeaking = false;
 					audioElement.onended = null;
 					audioElement.onerror = null;
 					audioElement.onpause = null;
@@ -452,6 +476,7 @@
 					resolve(e);
 				};
 
+				assistantSpeaking = true;
 				audioElement.src = audio.src;
 				audioElement.muted = true;
 				audioElement.playbackRate = $settings.audio?.tts?.playbackRate ?? 1;
@@ -597,7 +622,7 @@
 					console.log(`Audio for "${content}" not yet available in the cache, re-queued...`);
 					await new Promise((resolve) => setTimeout(resolve, 200)); // Wait before retrying to reduce tight loop
 				}
-			} else if (finishedMessages[id] && messages[id] && messages[id].length === 0) {
+			} else if (finishedMessages[id] && (!messages[id] || messages[id].length === 0)) {
 				// If the message is finished and there are no more messages to process, break the loop
 				assistantSpeaking = false;
 				break;
@@ -623,7 +648,6 @@
 			}
 			audioAbortController = new AbortController();
 
-			assistantSpeaking = true;
 			// Start monitoring and playing audio for the message ID
 			monitorAndPlayAudio(id, audioAbortController.signal);
 		}
@@ -705,6 +729,10 @@
 	};
 
 	onMount(async () => {
+        voiceChannel = new BroadcastChannel('owv-voice-owner');
+        voiceChannel.onmessage = () => { voiceSessionActive = false; showCallOverlay.set(false); };
+        voiceChannel.postMessage({ chatId });
+
 		const setWakeLock = async () => {
 			try {
 				wakeLock = await navigator.wakeLock.request('screen');
@@ -735,7 +763,7 @@
 
 		model = $models.find((m) => m.id === modelId);
 
-		startRecording();
+        startRecording().catch(error => { voiceError = 'Microphone indisponible : vérifie son autorisation.'; console.error(error); });
 
 		eventTarget.addEventListener('chat:start', chatStartHandler);
 		eventTarget.addEventListener('chat', chatEventHandler);
@@ -765,6 +793,12 @@
 	});
 
 	onDestroy(async () => {
+        voiceSessionActive = false;
+        voiceChannel?.close();
+        segmentQueue = [];
+        cancelAnimationFrame(analysisFrame);
+        if (analysisContext) { void analysisContext.close(); analysisContext = null; }
+        voiceFeedback.set({phase:'idle',bins:Array(32).fill(0),pending:0,error:''});
 		await stopAllAudio();
 		await stopRecordingCallback(false);
 		await stopCamera();
@@ -1114,6 +1148,19 @@
 					</button>
 				</Tooltip>
 
+
+				<Tooltip content={$i18n.t('Audio settings')}>
+					<button
+						type="button"
+						class="p-3 rounded-full bg-gray-50 dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+						aria-label={$i18n.t('Audio settings')}
+						on:click={() => (window.location.href = `${window.location.pathname}?settings=audio`)}
+					>
+						<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" class="size-5">
+							<path stroke-linecap="round" stroke-linejoin="round" d="M10.5 6h10.125M3.375 6h3.375m3.75 12h10.125m-17.25 0H6.75m3.75-6h10.125m-17.25 0H6.75M6.75 3.75v4.5m0 7.5v4.5m3.75-10.5v4.5" />
+						</svg>
+					</button>
+				</Tooltip>
 				<button
 					aria-label={$i18n.t('End call')}
 					class="p-3 rounded-full bg-gray-50 dark:bg-gray-900"

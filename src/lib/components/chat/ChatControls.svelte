@@ -2,6 +2,14 @@
 	let savedTab: 'controls' | 'files' | 'overview' = 'controls';
 </script>
 
+{#if $showCallOverlay && $voiceBackground}
+    <div class="hidden" aria-hidden="true">
+        <CallOverlay bind:files {submitPrompt} {stopResponse} {modelId} {chatId} {eventTarget}
+            on:close={() => { showCallOverlay.set(false); voiceBackground.set(false); }} />
+    </div>
+{/if}
+
+
 <script lang="ts">
 	import { onMount, tick, getContext } from 'svelte';
 	import {
@@ -9,6 +17,7 @@
 		terminalServers,
 		showControls,
 		showCallOverlay,
+		voiceBackground,
 		showArtifacts,
 		showEmbeds,
 		settings,
@@ -189,7 +198,7 @@
 	$: if (mounted && !chatId) closeHandler();
 
 	// Helper: is a "special" full-screen panel active?
-	$: specialPanel = $showCallOverlay || $showArtifacts || $showEmbeds;
+	$: specialPanel = ($showCallOverlay && !$voiceBackground) || $showArtifacts || $showEmbeds;
 </script>
 
 {#if !largeScreen}
@@ -200,7 +209,7 @@
 			className="min-h-[100dvh] !bg-white dark:!bg-gray-850"
 		>
 			<div class="h-[100dvh] flex flex-col">
-				{#if $showCallOverlay}
+				{#if $showCallOverlay && !$voiceBackground}
 					<div
 						class="h-full max-h-[100dvh] bg-white text-gray-700 dark:bg-black dark:text-gray-300 flex justify-center"
 					>
@@ -325,7 +334,7 @@
 					: 'overflow-y-auto'} scrollbar-hidden"
 				id="controls-container"
 			>
-				{#if $showCallOverlay}
+				{#if $showCallOverlay && !$voiceBackground}
 					<div class="w-full h-full flex justify-center">
 						<CallOverlay
 							bind:files

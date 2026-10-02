@@ -1,4 +1,5 @@
 <script>
+	import { isHermesCockpitFrame } from '$lib/integrations/hermes-embed';
 	import { io } from 'socket.io-client';
 	import { spring } from 'svelte/motion';
 	import { createPyodideWorker } from '$lib/pyodide/createPyodideWorker';
@@ -741,7 +742,7 @@
 				const displayTitle = title || $i18n.t('New Chat');
 				const contentPreview = cleanText(removeAllDetails(getOutputText(output) || content || ''));
 
-				if (done) {
+				if (done && (window.parent === window || event.chat_id === $chatId)) {
 					if (
 						($settings?.notificationSound ?? true) &&
 						($settings?.notificationSoundAlways ?? false)
@@ -1075,9 +1076,51 @@
 		}
 	};
 
+	onMount(() => {
+  if (window.parent === window) return;
+  const cockpitOrigin = 'https://agency.dev.4u-corp.com';
+  let bridgeBusy = false;
+  const receive = async (event) => {
+   if (event.origin !== cockpitOrigin || event.source !== window.parent || event.data?.type !== '4u-hermes-embed-auth' || bridgeBusy) return;
+   const { token, agentId } = event.data;
+   if (typeof token !== 'string' || !['sona','cto','developer','qa','devops','product','sales','marketing','researcher'].includes(agentId)) return;
+   bridgeBusy = true;
+   try {
+    const identity = await getSessionUser(token);
+    if (!identity || !['admin','user'].includes(identity.role)) return;
+    const wasAuthenticated = $user?.id === identity.id;
+    const sameToken = localStorage.getItem('token') === token;
+    localStorage.setItem('token', token);
+    sessionStorage.setItem('hermes:embedded-agent', agentId);
+    sessionStorage.setItem('hermes:embedded-cockpit-origin', cockpitOrigin);
+    if ((!wasAuthenticated && !sameToken) || location.pathname === '/auth') location.replace('/?agent=' + encodeURIComponent(agentId) + '&cockpit=1');
+   } catch { /* The native authentication UI retains its own error handling. */ }
+   finally { bridgeBusy = false; }
+  };
+  window.addEventListener('message', receive);
+  window.parent.postMessage({type:'hermes-embed-ready'},cockpitOrigin);
+  return () => window.removeEventListener('message',receive);
+ });
+
 	onMount(async () => {
 		const originalFetch = window.fetch.bind(window);
 		window.fetch = async (input, init) => {
+   // The external cockpit uses the native sidebar, scoped to the selected agent.
+   try {
+    const trusted = isHermesCockpitFrame();
+    const url = new URL(typeof input === 'string' || input instanceof URL ? String(input) : input.url, location.origin);
+    const agent = new URL(location.href).searchParams.get('agent') || sessionStorage.getItem('hermes:embedded-agent');
+    if (trusted && agent && url.origin === location.origin && url.pathname.startsWith('/api/v1/chats')) {
+     const headers = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
+     headers.set('X-Hermes-Agent',agent);
+     init = {...init,headers};
+     if (url.pathname === '/api/v1/chats/new' && typeof init.body === 'string') {
+      const body = JSON.parse(init.body);
+      body.chat = {...body.chat,hermesAgentId:agent};
+      init.body = JSON.stringify(body);
+     }
+    }
+   } catch {}
 			const response = await originalFetch(input, init);
 
 			if (

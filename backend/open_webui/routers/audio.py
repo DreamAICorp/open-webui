@@ -71,6 +71,7 @@ router = APIRouter()
 
 MAX_FILE_SIZE_MB: int = 20
 MAX_FILE_SIZE: int = MAX_FILE_SIZE_MB * 1024 * 1024
+CLI_VIEWER_VOICE_GATEWAY_URL = os.getenv('CLI_VIEWER_VOICE_GATEWAY_URL', 'http://100.88.55.69:8789').rstrip('/')
 AZURE_MAX_FILE_SIZE_MB: int = 200
 AZURE_MAX_FILE_SIZE: int = AZURE_MAX_FILE_SIZE_MB * 1024 * 1024
 
@@ -588,8 +589,29 @@ async def _tts_mistral(request, payload, file_path, file_body_path, user):
         await _raise_tts_error(exc, r)
 
 
+async def _tts_cliviewer(request, payload, file_path, file_body_path, user):
+    text = str(payload.get('input') or '').strip()
+    if not text or len(text) > 4000:
+        raise HTTPException(400, 'Speech text must contain 1–4000 characters')
+    voice = payload.get('voice') or await Config.get('audio.tts.voice')
+    session = await get_session()
+    async with session.post(
+        f'{CLI_VIEWER_VOICE_GATEWAY_URL}/api/voice/speak',
+        json={'text': text, 'voice': voice, 'language': (voice or 'fr')[:2], 'rate': 1.0},
+        timeout=aiohttp.ClientTimeout(total=90),
+    ) as response:
+        if response.status != 200:
+            raise HTTPException(502, 'CLI Viewer speech synthesis failed')
+        audio = await response.read()
+        if not audio:
+            raise HTTPException(502, 'CLI Viewer returned empty audio')
+    await _write_tts_cache(file_path, audio, file_body_path, payload)
+    return FileResponse(file_path, media_type='audio/mpeg')
+
+
 # Dispatcher map: engine name -> handler
 _TTS_ENGINES = {
+    'cliviewer': _tts_cliviewer,
     'openai': _tts_openai,
     'elevenlabs': _tts_elevenlabs,
     'azure': _tts_azure,
@@ -1341,6 +1363,46 @@ async def transcription(
         )
 
 
+@router.post('/cliviewer/transcriptions')
+async def cliviewer_transcription(
+    file: UploadFile = File(...),
+    language: Optional[str] = Form(None),
+    stt_mode: str = Form('auto'),
+    user=Depends(get_verified_user),
+):
+    """Authenticated bridge to the CLI Viewer voice gateway."""
+    if user.role != 'admin' and not await has_permission(user.id, 'chat.stt', await Config.get('user.permissions')):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=ERROR_MESSAGES.ACCESS_PROHIBITED)
+    if stt_mode not in {'auto', 'xai', 'local'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid CLI Viewer STT mode')
+    contents = await file.read()
+    if not contents or len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid audio file')
+    form = aiohttp.FormData()
+    form.add_field('audio', contents, filename=os.path.basename(file.filename or 'segment.webm'), content_type=file.content_type or 'audio/webm')
+    form.add_field('stt_mode', stt_mode)
+    form.add_field('skip_llm', 'true')
+    form.add_field('skip_tts', 'true')
+    if language:
+        form.add_field('reply_language', language[:16])
+    try:
+        session = await get_session()
+        async with session.post(
+            f'{CLI_VIEWER_VOICE_GATEWAY_URL}/api/voice/turn', data=form,
+            ssl=AIOHTTP_CLIENT_SESSION_SSL, timeout=aiohttp.ClientTimeout(total=90),
+        ) as response:
+            data = await response.json(content_type=None)
+            if response.status >= 400 or not data.get('ok', True):
+                log.warning('CLI Viewer STT returned %s', response.status)
+                raise HTTPException(status_code=502, detail='CLI Viewer transcription failed')
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception('CLI Viewer STT gateway unavailable')
+        raise HTTPException(status_code=502, detail='CLI Viewer transcription unavailable')
+    return {'text': str(data.get('transcript') or '')}
+
+
 async def get_available_models(request: Request) -> list[dict]:
     """Return the list of available TTS models for the configured engine."""
     available_models = []
@@ -1420,6 +1482,14 @@ async def get_available_voices(request) -> dict:
     """Return ``{voice_id: voice_name}`` for the configured TTS engine."""
     engine = await Config.get('audio.tts.engine')
     _timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST)
+
+    if engine == 'cliviewer':
+        session = await get_session()
+        async with session.get(f'{CLI_VIEWER_VOICE_GATEWAY_URL}/api/voice/languages', timeout=_timeout) as response:
+            if response.status != 200:
+                raise HTTPException(502, 'CLI Viewer voice catalogue unavailable')
+            catalogue = await response.json()
+        return {voice['id']: voice['name'] for voices in catalogue.get('voices', {}).values() for voice in voices}
 
     if engine == 'openai':
         base_url = await Config.get('audio.tts.openai.api_base_url')

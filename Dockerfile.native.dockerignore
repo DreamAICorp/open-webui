@@ -1,0 +1,17 @@
+*
+!Dockerfile.native
+!build/
+!build/**
+!backend/
+!backend/open_webui/
+!backend/open_webui/routers/
+!backend/open_webui/routers/audio.py
+!backend/open_webui/routers/chats.py
+!backend/open_webui/models/
+!backend/open_webui/models/chats.py
+
+!backend/open_webui/main.py
+!backend/open_webui/routers/hermes.py
+
+!backend/open_webui/utils/
+!backend/open_webui/utils/hermes_chat_scope.py

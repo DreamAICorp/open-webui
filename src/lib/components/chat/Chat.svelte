@@ -3,6 +3,11 @@
 	import { toast } from 'svelte-sonner';
 
 	import { getContext, onDestroy, onMount, tick } from 'svelte';
+	import { mountNativeHarness, unmountNativeHarness, type NativeHarness } from '$lib/integrations/native-harness';
+	let nativeHarness: NativeHarness | null = null;
+	let hermesAgent = "";
+	onMount(() => { hermesAgent = $page.url.searchParams.get("agent") || (window.frameElement as HTMLElement | null)?.dataset.hermesAgentId || (window.parent !== window ? sessionStorage.getItem("hermes:embedded-agent") : "") || hermesAgent; });
+	$: if (typeof window !== "undefined" && window.parent !== window && hermesAgent) window.parent.postMessage({type:"hermes-agent-selected",agentId:hermesAgent},"https://agency.dev.4u-corp.com");
 	import { fade } from 'svelte/transition';
 	const i18n: Writable<i18nType> = getContext('i18n');
 
@@ -1267,6 +1272,7 @@
 				} else if (type === 'chat:message' || type === 'replace') {
 					message.content = data.content;
 					if (typeof data.done === 'boolean') message.done = data.done;
+					if (Array.isArray(data.cliActivities)) message.cliActivities = data.cliActivities;
 				} else if (type === 'chat:message:files' || type === 'files') {
 					message.files = data.files;
 				} else if (type === 'chat:message:tasks') {
@@ -1557,24 +1563,47 @@
 	let harnessTurnActive = false;
 	const harnessTurn = (boundChatId: string, assistantId: string) => {
 		let boundHistory = history, closed = false;
+		if ($chatId === boundChatId) eventTarget.dispatchEvent(new CustomEvent('chat:start',{detail:{id:assistantId}}));
 		const change = (fields: Record<string, unknown>) => {
 			if (closed) throw new Error('Tour CLI déjà terminé.');
 			const current = $chatId === boundChatId ? history : boundHistory;
 			boundHistory = {...current,messages:{...current.messages,[assistantId]:{...current.messages[assistantId],...fields}}};
 			if ($chatId === boundChatId) history = boundHistory;
 		};
-		const update = (content: string, done = false) => change({content,done,statusHistory:[]});
+		const update = (content: string, done = false) => {
+			change({content,done,statusHistory:[]});
+			if ($chatId === boundChatId) dispatchCallOverlayAudio(history.messages[assistantId],done);
+		};
 		const status = (description: string) => change({content:'',done:false,statusHistory:[{description,done:false}]});
 		return {
 			messageId: assistantId,
 			update,
 			status,
+			activity(activity: Record<string, any>) {
+				const current = $chatId === boundChatId ? history : boundHistory;
+				const activities = [...(current.messages[assistantId].cliActivities || [])];
+				const index = activities.findIndex((item) => item.id === activity.id);
+				const previous = index < 0 ? {} : activities[index];
+				const next = {...previous,...activity};
+				if (activity.outputDelta !== undefined) next.output = (previous.output || '') + activity.outputDelta;
+				delete next.outputDelta;
+				if (index < 0) activities.push(next); else activities[index] = next;
+				change({cliActivities:activities});
+			},
 			async finish(content: string) {
 				update(content,true);
 				closed = true;
+				if ($chatId === boundChatId) {
+					eventTarget.dispatchEvent(new CustomEvent('chat:finish',{detail:{id:assistantId,content}}));
+					if ($settings.responseAutoPlayback && !$showCallOverlay) {
+						await tick();
+						document.getElementById(`speak-button-${assistantId}`)?.click();
+					}
+				}
 				try {
-					const result = await fetch(`${WEBUI_API_BASE_URL}/chats/${encodeURIComponent(boundChatId)}/messages/${assistantId}`,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${localStorage.token}`},body:JSON.stringify({content,done:true,statusHistory:[]})});
+					const result = await fetch(`${WEBUI_API_BASE_URL}/chats/${encodeURIComponent(boundChatId)}/messages/${assistantId}`,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${localStorage.token}`},body:JSON.stringify({content,done:true,statusHistory:[],...(boundHistory.messages[assistantId].cliActivities ? {cliActivities:boundHistory.messages[assistantId].cliActivities} : {})})});
 					if (!result.ok) throw new Error('Échec de sauvegarde de la réponse CLI.');
+					if (window.parent !== window) window.parent.postMessage({type:'hermes-chat-saved',agentId:boundHistory.messages[assistantId].hermesAgentId,chatId:boundChatId},"https://agency.dev.4u-corp.com");
 				} finally {harnessTurnActive = false;}
 			}
 		};
@@ -1596,23 +1625,23 @@
 			harnessTurnActive = true;
 			return {...harnessTurn($chatId,messageId),content:message.content || ''};
 		},
-		async begin(request: {chatId: string; prompt: string; model: string; name: string}) {
+		async begin(request: {chatId: string; prompt: string; model: string; name: string; agentId?: string; files?: any[]}) {
 			if (request.chatId !== $chatId || $temporaryChatEnabled || harnessTurnActive || hasPendingAssistantLeaf()) {
 				throw new Error('Conversation indisponible ou réponse déjà en cours.');
 			}
-			if (!request.prompt?.trim() || !request.model) throw new Error('Tour CLI invalide.');
+			if ((!request.prompt?.trim() && !request.files?.length) || !request.model) throw new Error('Tour CLI invalide.');
 			const boundChatId = $chatId;
 			const userId = uuidv4(), assistantId = uuidv4(), parentId = history.currentId;
 			const timestamp = Math.floor(Date.now() / 1000);
 			const messages = {...history.messages};
 			if (parentId && messages[parentId]) messages[parentId] = {...messages[parentId], childrenIds:[...(messages[parentId].childrenIds || []), userId]};
-			messages[userId] = {id:userId,parentId,childrenIds:[assistantId],role:'user',content:request.prompt,timestamp,models:[request.model]};
-			messages[assistantId] = {id:assistantId,parentId:userId,childrenIds:[],role:'assistant',content:'',statusHistory:[{description:'Préparation de la session…',done:false}],model:request.model,modelName:request.name,modelIdx:0,timestamp,done:false};
+			messages[userId] = {id:userId,parentId,childrenIds:[assistantId],role:'user',content:request.prompt,timestamp,models:[request.model],...(request.files?.length ? {files:request.files} : {})};
+			messages[assistantId] = {id:assistantId,parentId:userId,childrenIds:[],role:'assistant',content:'',statusHistory:[{description:'Préparation de la session…',done:false}],model:request.model,modelName:request.name,hermesAgentId:request.agentId,modelIdx:0,timestamp,done:false};
 			history = {...history,messages,currentId:assistantId};
 			harnessTurnActive = true;
 			const persistedHistory = {...history,messages:{...history.messages,[assistantId]:{...history.messages[assistantId],content:'',statusHistory:[{description:'Travail Codex en cours…',done:false}],done:false}}};
 			try {
-				const saved = await updateChatById(localStorage.token,boundChatId,{history:persistedHistory,messages:createMessagesList(persistedHistory,persistedHistory.currentId)});
+				const saved = await updateChatById(localStorage.token,boundChatId,{history:persistedHistory,messages:createMessagesList(persistedHistory,persistedHistory.currentId),...(request.agentId ? {hermesAgentId:request.agentId} : {})});
 				if ($chatId === boundChatId) chat = saved;
 			}
 			catch(error) {
@@ -1627,6 +1656,7 @@
 	onMount(() => {
 		loading = true;
 		(window as any).owvHarnessChat = harnessChatBridge;
+		nativeHarness = mountNativeHarness(() => $chatId || 'new');
 		console.log('mounted');
 		window.addEventListener('message', onMessageHandler);
 		$socket?.on('events', chatEventHandler);
@@ -1704,6 +1734,8 @@
 		init();
 
 		return () => {
+			unmountNativeHarness(nativeHarness);
+			nativeHarness = null;
 			if ((window as any).owvHarnessChat === harnessChatBridge) delete (window as any).owvHarnessChat;
 			try {
 				clearTimeout(saveControlsTimer);
@@ -2374,6 +2406,7 @@
 			noteChatDebug('getTagsById completed', { tagCount: tags?.length ?? 0 });
 
 			const chatContent = chat.chat;
+			hermesAgent = chatContent?.hermesAgentId || $page.url.searchParams.get("agent") || (window.frameElement as HTMLElement | null)?.dataset.hermesAgentId || (window.parent !== window ? sessionStorage.getItem("hermes:embedded-agent") : "") || "";
 			chatVariables = chat?.variables ?? {};
 
 			if (chatContent) {
@@ -3168,6 +3201,49 @@
 			toast.error('Une réponse CLI est déjà en cours.');
 			return;
 		}
+
+        if (hermesAgent) {
+            if ($temporaryChatEnabled) { toast.error('Enregistre la conversation avant de contacter un agent.'); return; }
+            if (files.length) { toast.error('Les pièces jointes Hermès ne sont pas encore prises en charge.'); return; }
+            if (nativeHarness) await nativeHarness.ready;
+            const selection = nativeHarness?.controls?.selection($chatId || 'new');
+            if (!selection?.source || !['plan','free'].includes(selection.source)) {
+                toast.error('Choisis explicitement un LLM payant ou gratuit dans le sélecteur Modèles.'); return;
+            }
+            if (selection.source === 'plan' && selection.harness !== 'codex') {
+                toast.error('La connexion payante Hermès utilise actuellement le compte ChatGPT/Codex dédié.'); return;
+            }
+            const llm = selection.model || (selection.source === 'plan' ? 'gpt-6.1-sol' : 'auto');
+            const agent = hermesAgent;
+            const query = String(userPrompt).trim();
+            if (!query) return;
+            if (!$chatId) { await initChatHandler(history); nativeHarness?.controls?.promoteDraft($chatId); }
+            const messages = createMessagesList(history,history.currentId).filter(m=>['user','assistant'].includes(m.role)).map(m=>({role:m.role,content:m.content}));
+            const turn = await harnessChatBridge.begin({chatId:$chatId,prompt:query,model:llm,name:llm,agentId:agent});
+            clearCommandInput();
+            try {
+                const response = await fetch('/api/v1/hermes/chat', {method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${localStorage.token}`},body:JSON.stringify({agent,model:llm,source:selection.source,chat_id:$chatId,messages:[...messages,{role:'user',content:query}]})});
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.detail || 'Le runtime Hermès a refusé cet appel.');
+                await turn.finish(result.response.choices[0].message.content);
+            } catch (error) { const detail = error instanceof Error ? error.message : String(error); await turn.finish(`Erreur Hermès : ${detail}`); toast.error(detail); }
+            return;
+        }
+
+		if (nativeHarness) {
+			await nativeHarness.ready;
+			const controls = nativeHarness.controls;
+			if (controls && controls.selected($chatId || 'new') !== 'owv') {
+				if ($temporaryChatEnabled) { toast.error('Enregistre cette conversation avant de lancer un CLI.'); return; }
+				if (files.some(file=>!file.id || file.status === 'uploading' || file.status === 'error')) { toast.error('Attends la fin du téléversement des pièces jointes.'); return; }
+				if (!$chatId) {
+					await initChatHandler(history);
+					controls.promoteDraft($chatId);
+				}
+				await controls.submit($chatId, String(userPrompt), () => { clearCommandInput(); files = []; }, [...files]);
+				return;
+			}
+		}
 		console.log('submitHandler', userPrompt, $chatId);
 
 		const _selectedModels = selectedModels.map((modelId) =>
@@ -3830,6 +3906,11 @@
 	};
 
 	const stopResponse = async (processQueue = true) => {
+		if (nativeHarness?.controls && harnessTurnActive) {
+			await nativeHarness.controls.interrupt($chatId).catch(error => toast.error(error.message));
+			return;
+		}
+
 		const responseMessage = history.currentId ? history.messages[history.currentId] : null;
 		const hasTaskIds = (taskIds?.length ?? 0) > 0;
 		const hasPendingAssistantResponse =
@@ -4519,6 +4600,7 @@
 										bind:this={messageInput}
 										{history}
 										{taskIds}
+										bind:hermesAgent
 										bind:selectedModels
 										bind:files
 										bind:prompt
@@ -4611,6 +4693,7 @@
 										bind:this={messageInput}
 										{history}
 										{taskIds}
+										bind:hermesAgent
 										bind:selectedModels
 										bind:files
 										bind:prompt
@@ -4669,6 +4752,7 @@
 						{:else}
 							<div class="flex items-center h-full">
 								<Placeholder
+									bind:hermesAgent
 									bind:selectedModelIdx
 									{history}
 									bind:selectedModels

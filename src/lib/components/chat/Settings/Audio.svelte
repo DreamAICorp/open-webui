@@ -26,6 +26,10 @@
 
 	let STTEngine = '';
 	let STTLanguage = '';
+	let STTSource = 'cliviewer';
+	let STTMode = 'auto';
+	let continuousDictation = false;
+	let voiceSource = 'cost';
 
 	let TTSEngine = '';
 	let TTSEngineConfig = {};
@@ -96,6 +100,10 @@
 
 		STTEngine = $settings?.audio?.stt?.engine ?? '';
 		STTLanguage = $settings?.audio?.stt?.language ?? '';
+		STTSource = $settings?.audio?.stt?.source ?? 'cliviewer';
+		STTMode = $settings?.audio?.stt?.mode ?? 'auto';
+		continuousDictation = $settings?.audio?.stt?.continuous ?? false;
+		voiceSource = $settings?.audio?.voice?.source ?? 'cost';
 
 		TTSEngine = $settings?.audio?.tts?.engine ?? '';
 		TTSEngineConfig = $settings?.audio?.tts?.engineConfig ?? {};
@@ -166,7 +174,13 @@
 			audio: {
 				stt: {
 					engine: STTEngine !== '' ? STTEngine : undefined,
-					language: STTLanguage !== '' ? STTLanguage : undefined
+					language: STTLanguage !== '' ? STTLanguage : undefined,
+					source: STTSource,
+					mode: STTMode,
+					continuous: continuousDictation
+				},
+				voice: {
+					source: voiceSource
 				},
 				tts: {
 					engine: TTSEngine !== '' ? TTSEngine : undefined,
@@ -222,6 +236,36 @@
 					</Tooltip>
 				</UserSettingRow>
 			{/if}
+
+			<UserSettingRow label="Source de dictée" description="Open WebUI natif ou le gateway audio de CLI Viewer.">
+				<SettingsSelect bind:value={STTSource} ariaLabel="Source de dictée">
+					<option value="open-webui">Open WebUI</option>
+					<option value="cliviewer">CLI Viewer</option>
+				</SettingsSelect>
+			</UserSettingRow>
+
+			{#if STTSource === 'cliviewer'}
+				<UserSettingRow label="Moteur STT CLI Viewer" description="Mode de transcription du gateway vocal.">
+					<SettingsSelect bind:value={STTMode} ariaLabel="Moteur STT CLI Viewer">
+						<option value="auto">Auto</option>
+						<option value="xai">xAI</option>
+						<option value="local">Local</option>
+					</SettingsSelect>
+				</UserSettingRow>
+			{/if}
+
+			<UserSettingRow label="Source vocale" description="Même choix que CLI Viewer : le modèle OWV actif reste utilisé pour la réponse.">
+				<SettingsSelect bind:value={voiceSource} ariaLabel="Source vocale">
+					<option value="cost">Cost (lm-routing)</option>
+					<option value="grok">Grok (plan xAI)</option>
+					<option value="claude">Claude (plan)</option>
+					<option value="codex">Codex (plan)</option>
+				</SettingsSelect>
+			</UserSettingRow>
+
+			<UserSettingRow label="Dictée continue" description="Envoie la transcription après une courte pause, comme CLI Viewer.">
+				<Switch state={continuousDictation} ariaLabel="Dictée continue" on:change={(event) => (continuousDictation = event.detail)} />
+			</UserSettingRow>
 
 			<UserSettingRow
 				label={$i18n.t('settings.personal.audio.instantAutoSendAfterVoiceTranscription.label')}

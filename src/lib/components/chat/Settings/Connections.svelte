@@ -10,6 +10,7 @@
 	import Plus from '$lib/components/icons/Plus.svelte';
 	import Connection from './Connections/Connection.svelte';
 	import CliSessions from './Connections/CliSessions.svelte';
+	import McpConnections from './Connections/McpConnections.svelte';
 
 	import AddConnectionModal from '$lib/components/AddConnectionModal.svelte';
 
@@ -80,6 +81,7 @@
 
 	<div class="flex flex-1 min-h-0 flex-col overflow-y-auto scrollbar-hover pr-1.5">
 		<CliSessions />
+		<McpConnections />
 		{#if $backendConfig?.features?.enable_direct_connections}
 		{#if config !== null}
 			<section class="space-y-3" aria-labelledby="direct-connections-heading">

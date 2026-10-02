@@ -4,7 +4,7 @@
 	import { config, settings } from '$lib/stores';
 	import { blobToFile, calculateSHA256, extractCurlyBraceWords } from '$lib/utils';
 
-	import { transcribeAudio } from '$lib/apis/audio';
+	import { transcribeAudio, transcribeCliViewerAudio } from '$lib/apis/audio';
 	import XMark from '$lib/components/icons/XMark.svelte';
 
 	import dayjs from 'dayjs';
@@ -33,6 +33,7 @@
 	let durationCounter = null;
 
 	let transcription = '';
+	let autoStopping = false;
 
 	const startDurationCounter = () => {
 		durationCounter = setInterval(() => {
@@ -151,6 +152,19 @@
 
 					visualizerData = visualizerData;
 
+					// CLI Viewer uses an RMS gate and a short silence window instead of
+					// an arbitrary recording timeout. Keep this opt-in per user.
+					if (rmsLevel > 0.035) lastSoundTime = Date.now();
+					if (
+						$settings?.audio?.stt?.continuous &&
+						!autoStopping &&
+						durationSeconds > 0 &&
+						Date.now() - lastSoundTime > 950
+					) {
+						autoStopping = true;
+						void confirmRecording();
+					}
+
 					// if (domainData.some((value) => value > 0)) {
 					// 	lastSoundTime = Date.now();
 					// }
@@ -178,15 +192,23 @@
 		const file = blobToFile(audioBlob, `Recording-${dayjs().format('L LT')}.${ext}`);
 
 		if (transcribe) {
-			if ($config.audio.stt.engine === 'web' || ($settings?.audio?.stt?.engine ?? '') === 'web') {
+			if (
+				($settings?.audio?.stt?.source ?? 'cliviewer') !== 'cliviewer' &&
+				($config.audio.stt.engine === 'web' || ($settings?.audio?.stt?.engine ?? '') === 'web')
+			) {
 				// with web stt, we don't need to send the file to the server
 				return;
 			}
 
-			const res = await transcribeAudio(
-				localStorage.token,
-				file,
-				$settings?.audio?.stt?.language
+			const useCliViewer = ($settings?.audio?.stt?.source ?? 'cliviewer') === 'cliviewer';
+			const res = await (useCliViewer
+				? transcribeCliViewerAudio(
+						localStorage.token,
+						file,
+						$settings?.audio?.stt?.language,
+						$settings?.audio?.stt?.mode
+					)
+				: transcribeAudio(localStorage.token, file, $settings?.audio?.stt?.language)
 			).catch((error) => {
 				toast.error(`${error}`);
 				return null;
@@ -206,6 +228,7 @@
 
 	const startRecording = async () => {
 		loading = true;
+		autoStopping = false;
 
 		try {
 			if (displayMedia) {
@@ -298,7 +321,10 @@
 		}
 
 		if (transcribe) {
-			if ($config.audio.stt.engine === 'web' || ($settings?.audio?.stt?.engine ?? '') === 'web') {
+			if (
+				($settings?.audio?.stt?.source ?? 'cliviewer') !== 'cliviewer' &&
+				($config.audio.stt.engine === 'web' || ($settings?.audio?.stt?.engine ?? '') === 'web')
+			) {
 				if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
 					// reset accumulated transcription from previous sessions
 					transcription = '';

@@ -97,6 +97,25 @@ export const transcribeAudio = async (token: string, file: File, language?: stri
 	return res;
 };
 
+export const transcribeCliViewerAudio = async (
+	token: string,
+	file: File,
+	language?: string,
+	sttMode: string = 'auto'
+) => {
+	const data = new FormData();
+	data.append('file', file);
+	if (language) data.append('language', language);
+	data.append('stt_mode', ['auto', 'xai', 'local'].includes(sttMode) ? sttMode : 'auto');
+	const res = await fetch(`${AUDIO_API_BASE_URL}/cliviewer/transcriptions`, {
+		method: 'POST',
+		headers: { Accept: 'application/json', authorization: `Bearer ${token}` },
+		body: data
+	});
+	if (!res.ok) throw await res.json();
+	return res.json();
+};
+
 export const synthesizeOpenAISpeech = async (
 	token: string = '',
 	speaker: string = 'alloy',

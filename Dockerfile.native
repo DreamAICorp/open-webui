@@ -1,0 +1,14 @@
+FROM ghcr.io/open-webui/open-webui@sha256:8b432fe0a65b91116afc7961365c6cca5379cc923171386a96691f3471f3cae9
+
+# Build the patched frontend first. Instance data and credentials stay in the
+# runtime volume/environment and never enter this image's build context.
+RUN rm -rf /app/build
+COPY build/ /app/build/
+COPY backend/open_webui/routers/audio.py /app/backend/open_webui/routers/audio.py
+COPY backend/open_webui/routers/chats.py /app/backend/open_webui/routers/chats.py
+COPY backend/open_webui/models/chats.py /app/backend/open_webui/models/chats.py
+
+COPY backend/open_webui/main.py /app/backend/open_webui/main.py
+COPY backend/open_webui/routers/hermes.py /app/backend/open_webui/routers/hermes.py
+
+COPY backend/open_webui/utils/hermes_chat_scope.py /app/backend/open_webui/utils/hermes_chat_scope.py

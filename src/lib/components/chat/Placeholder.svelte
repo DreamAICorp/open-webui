@@ -43,6 +43,7 @@
 
 	export let atSelectedModel: Model | undefined;
 	export let selectedModels: [''];
+	export let hermesAgent = '';
 
 	export let history;
 
@@ -241,6 +242,7 @@
 			<div class="text-base font-normal @md:max-w-3xl w-full py-3 {atSelectedModel ? 'mt-2' : ''}">
 				{#if !($selectedFolder && folderReadOnly)}
 					<MessageInput
+						bind:hermesAgent
 						bind:this={messageInput}
 						{history}
 						bind:selectedModels
