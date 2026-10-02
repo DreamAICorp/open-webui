@@ -13,6 +13,11 @@
     }
   }
   const selectedExecution = chat => localStorage.getItem("owv:execution:"+PROFILE+":"+chat) || localStorage.getItem("owv:execution:"+PROFILE+":last") || "host";
+  const selectedAgent = () => {
+    const doc = NATIVE_RUNTIME?.frame?.contentDocument || document;
+    const value = doc.querySelector('select[aria-label="Agent / sous-agent"]')?.value || "";
+    return /^[a-z][a-z0-9-]{0,60}$/.test(value) ? value : "";
+  };
   const AUTH = () =>
     localStorage.token ? { authorization: "Bearer " + localStorage.token } : {};
   const H = [["owv", "Open WebUI"], ["codex", "Codex"], ["claude", "Claude"], [
@@ -32,7 +37,7 @@
     connectionKey = (id, h) => "owv:connection:" + PROFILE + ":" + id + ":" + h,
     selectedConnection = (id, h) => localStorage.getItem(connectionKey(id, h)) || localStorage.getItem("owv:connection:" + PROFILE + ":last:" + h) || "",
     setConnection = (id, h, value) => { localStorage.setItem(connectionKey(id, h), value); localStorage.setItem("owv:connection:" + PROFILE + ":last:" + h, value); },
-    key = (id, h) => "owv:session:routing-v4:" + PROFILE + ":" + id + ":" + h + ":" + selectedConnection(id, h) + (["codex","claude","opencode"].includes(h)&&selectedExecution(id)==="computer"?":computer":""),
+    key = (id, h) => "owv:session:routing-v4:" + PROFILE + ":" + id + ":" + h + ":" + selectedConnection(id, h) + (["codex","claude","opencode"].includes(h)&&selectedExecution(id)==="computer"?":computer":"") + (selectedAgent()?":agent:"+selectedAgent():""),
     modelKey = (id, h) => "owv:model:" + PROFILE + ":" + id + ":" + h,
     sourceKey = (id, h) => "owv:model-source:" + PROFILE + ":" + id + ":" + h,
     selectedSource = (id, h) => localStorage.getItem(sourceKey(id, h)) || localStorage.getItem("owv:model-source:" + PROFILE + ":last:" + h) || undefined,
@@ -121,7 +126,7 @@
     const s = await json("/cockpit-sessions/v1/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ harness: h, model: selection.model || undefined, source: selection.source, sessionId: selection.sessionId || undefined, cockpitHost: PROFILE, executionTarget: ["codex","claude","opencode"].includes(h)?selectedExecution(chat):"host" }),
+      body: JSON.stringify({ harness: h, agentId: selection.agentId || selectedAgent() || undefined, model: selection.model || undefined, source: selection.source, sessionId: selection.sessionId || undefined, cockpitHost: PROFILE, executionTarget: ["codex","claude","opencode"].includes(h)?selectedExecution(chat):"host" }),
     });
     localStorage.setItem(key(chat, h), s.id);
     return s.id;
@@ -418,7 +423,7 @@
   async function run(f, input) {
     const chat = idOf(f),
       h = harness(chat),
-      selection = {model:selectedModel(chat,h),source:selectedSource(chat,h),sessionId:selectedConnection(chat,h)};
+      selection = {model:selectedModel(chat,h),source:selectedSource(chat,h),sessionId:selectedConnection(chat,h),agentId:f.contentDocument?.querySelector('select[aria-label="Agent / sous-agent"]')?.value || selectedAgent() || undefined};
     const attachments = input.files || [];
     let prompt = (input.innerText || input.textContent || "").trim();
     if (!chat || (!prompt && !attachments.length)) return;
@@ -438,7 +443,7 @@
       const sid = await ensure(chat, h, selection);
       const staged = attachments.length ? await json('/cockpit-sessions/v1/sessions/'+encodeURIComponent(sid)+'/attachments',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({files:attachments.map(file=>({id:file.id,name:file.name}))})}) : {items:[]};
       if (bridge?.version === 1) {
-        nativeTurn = await bridge.begin({chatId:chat,prompt,model:selection.model||'auto',name,files:attachments});
+        nativeTurn = await bridge.begin({chatId:chat,prompt,model:selection.model||'auto',name,agentId:selection.agentId,files:attachments});
     input.innerText = "";
     input.dispatchEvent(
       new InputEvent("input", {
