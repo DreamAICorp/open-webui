@@ -266,6 +266,10 @@
                 status("Objectif toujours actif. Poursuite automatique…");
                 continue;
               }
+              if (e.method === "turn/started" && turn.awaitingGoalTurn && eventTurnId) {
+                turn.id = eventTurnId;
+                turn.awaitingGoalTurn = false;
+              }
               const terminal = e.method === "turn/completed" || e.method === "error";
               if (terminal && !turn.id && eventTurnId) continue;
               if (turn.id && eventTurnId && eventTurnId !== turn.id) continue;
@@ -335,6 +339,23 @@
                 const finalMessages = (e.params?.turn?.items || []).filter(item => item?.type === "agentMessage").map(item => item.text || "").filter(Boolean);
                 if (draft) commitMessage(draft);
                 for (const finalMessage of finalMessages) commitMessage(finalMessage);
+                if (turn.autonomous) {
+                  const sessionPath = "/cockpit-sessions/v1/sessions/" + encodeURIComponent(sid);
+                  const state = await json(sessionPath);
+                  const nextTurn = state.activeTurnId || state.lastTurnId;
+                  if (nextTurn && nextTurn !== turn.id) {
+                    turn.id = nextTurn;
+                    status("Objectif toujours suivi. Poursuite du tour suivant…");
+                    continue;
+                  }
+                  const value = await json(sessionPath + "/goal");
+                  if (value.goal?.status === "active") {
+                    turn.id = null;
+                    turn.awaitingGoalTurn = true;
+                    status("Objectif toujours actif. Attente du prochain tour natif…");
+                    continue;
+                  }
+                }
                 if (text) { pending.textContent = text; pending.scrollIntoView({ block: "end" }); }
                 else if (!text) pending.textContent = "Travail terminé.";
                 await reader.cancel();
@@ -401,8 +422,8 @@
       // A persistent goal can advance to a new Codex turn while the page is
       // closed. Always follow the server's active turn instead of filtering its
       // events with a stale turn id saved by the previous page instance.
-      const turnId = state.autonomousGoal && state.activeTurnId
-        ? state.activeTurnId
+      const turnId = (state.autonomousGoal || saved.autonomous) && (state.activeTurnId || state.lastTurnId)
+        ? state.activeTurnId || state.lastTurnId
         : saved.turnId || state.activeTurnId || state.lastTurnId;
       if (!turnId) throw Error("Le tour Codex à reprendre est introuvable.");
       nativeTurn = recoveredTurn || await bridge.resume({chatId:chat,messageId:saved.messageId});
@@ -412,7 +433,7 @@
       const initialContent = previousContent === "Erreur : la session du moteur a été interrompue." ? "" : previousContent;
       let text = initialContent || "Travail Codex en cours…";
       pending = {get textContent(){return text;},set textContent(value){text=String(value);nativeTurn.update(text);},setStatus(value){text=String(value);(nativeTurn.status||nativeTurn.update)(text);},activity(value){nativeTurn.activity?.(value);},scrollIntoView(){}};
-      await events(f, saved.sid, pending, {id:turnId}, () => {}, true, initialContent);
+      await events(f, saved.sid, pending, {id:turnId,autonomous:state.autonomousGoal || saved.autonomous}, () => {}, true, initialContent);
       await nativeTurn.finish(pending.textContent || "Aucune réponse reçue du moteur.");
       localStorage.removeItem(pendingTurnKey(chat));
     } catch (error) {
@@ -472,7 +493,7 @@
         if (pending) pending.setStatus ? pending.setStatus("Objectif configuré. Démarrage du travail…") : pending.textContent = "Objectif configuré. Démarrage du travail…";
       }
       let ready, failed;
-      const turn = { id: null };
+      const turn = { id: null, autonomous };
       const subscribed = new Promise((resolve, reject) => { ready = resolve; failed = reject; });
       const stream = events(f, sid, pending, turn, ready);
       stream.catch(failed);
@@ -486,7 +507,7 @@
         },
       );
       turn.id = started.turnId;
-      if (nativeTurn?.messageId) localStorage.setItem(pendingTurnKey(chat), JSON.stringify({sid,turnId:turn.id,messageId:nativeTurn.messageId}));
+      if (nativeTurn?.messageId) localStorage.setItem(pendingTurnKey(chat), JSON.stringify({sid,turnId:turn.id,messageId:nativeTurn.messageId,autonomous}));
       toast(name + " travaille dans sa session persistante.");
       await stream;
       if (pending && (!pending.textContent.trim() || pending.textContent === "Réflexion…")) {
