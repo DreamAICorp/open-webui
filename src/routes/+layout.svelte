@@ -1093,6 +1093,7 @@
     localStorage.setItem('token', token);
     sessionStorage.setItem('hermes:embedded-agent', agentId);
     sessionStorage.setItem('hermes:embedded-cockpit-origin', cockpitOrigin);
+    window.dispatchEvent(new CustomEvent('hermes:embedded-agent-changed', {detail:{agentId}}));
     if ((!wasAuthenticated && !sameToken) || location.pathname === '/auth') location.replace('/?agent=' + encodeURIComponent(agentId) + '&cockpit=1');
    } catch { /* The native authentication UI retains its own error handling. */ }
    finally { bridgeBusy = false; }

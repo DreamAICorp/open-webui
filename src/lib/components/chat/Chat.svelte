@@ -5,8 +5,18 @@
 	import { getContext, onDestroy, onMount, tick } from 'svelte';
 	import { mountNativeHarness, unmountNativeHarness, type NativeHarness } from '$lib/integrations/native-harness';
 	let nativeHarness: NativeHarness | null = null;
+	import { isHermesCockpitFrame } from '$lib/integrations/hermes-embed';
 	let hermesAgent = "";
-	onMount(() => { hermesAgent = $page.url.searchParams.get("agent") || (window.frameElement as HTMLElement | null)?.dataset.hermesAgentId || (window.parent !== window ? sessionStorage.getItem("hermes:embedded-agent") : "") || hermesAgent; });
+	onMount(() => {
+		const embeddedAgent = isHermesCockpitFrame() ? sessionStorage.getItem("hermes:embedded-agent") : "";
+		hermesAgent = embeddedAgent || $page.url.searchParams.get("agent") || (window.frameElement as HTMLElement | null)?.dataset.hermesAgentId || hermesAgent;
+		const selected = (event: Event) => {
+			const agentId = (event as CustomEvent<{agentId:string}>).detail?.agentId;
+			if (isHermesCockpitFrame() && agentId && agentId === sessionStorage.getItem("hermes:embedded-agent")) hermesAgent = agentId;
+		};
+		window.addEventListener("hermes:embedded-agent-changed", selected);
+		return () => window.removeEventListener("hermes:embedded-agent-changed", selected);
+	});
 	$: if (typeof window !== "undefined" && window.parent !== window && hermesAgent) window.parent.postMessage({type:"hermes-agent-selected",agentId:hermesAgent},"https://agency.dev.4u-corp.com");
 	import { fade } from 'svelte/transition';
 	const i18n: Writable<i18nType> = getContext('i18n');
