@@ -408,7 +408,8 @@
       nativeTurn = recoveredTurn || await bridge.resume({chatId:chat,messageId:saved.messageId});
       saved.turnId = turnId;
       localStorage.setItem(pendingTurnKey(chat),JSON.stringify(saved));
-      const initialContent = saved.initialContent || nativeTurn.content || "";
+      const previousContent = saved.initialContent || nativeTurn.content || "";
+      const initialContent = previousContent === "Erreur : la session du moteur a été interrompue." ? "" : previousContent;
       let text = initialContent || "Travail Codex en cours…";
       pending = {get textContent(){return text;},set textContent(value){text=String(value);nativeTurn.update(text);},setStatus(value){text=String(value);(nativeTurn.status||nativeTurn.update)(text);},activity(value){nativeTurn.activity?.(value);},scrollIntoView(){}};
       await events(f, saved.sid, pending, {id:turnId}, () => {}, true, initialContent);
@@ -509,6 +510,14 @@
       native = d?.querySelector("#model-selector-model-button");
     const previous = d && mounts.get(d);
     if (previous && (previous.chat !== chat || previous.native !== native)) disposeMount(d);
+    if(previous && previous.chat===chat && previous.native===native){
+      const recoveryKey=key(chat,'codex'),bridgeReady=f.contentWindow?.owvHarnessChat?.version===1;
+      if(previous.recoveryKey!==recoveryKey || previous.bridgeReady!==bridgeReady){
+        previous.recoveryKey=recoveryKey;previous.bridgeReady=bridgeReady;
+        void resumePending(f,chat);
+      }
+    }
+
     if (!d || !chat || !native || d.getElementById("owv-harness-picker")) {
       return;
     }
@@ -745,7 +754,7 @@
         run(f, input);
       }
     }, options);
-    mounts.set(d,{chat,native,dispose(){closeAccountDialog();lifecycle.abort();d.querySelectorAll("[data-owv-request-chat]").forEach(panel=>{if(panel.dataset.owvRequestChat===chat)panel.remove();});b.remove();connection.remove();execution.remove();menu.remove();connectionMenu.remove();modelMenu.remove();
+    mounts.set(d,{chat,native,recoveryKey:key(chat,'codex'),bridgeReady:f.contentWindow?.owvHarnessChat?.version===1,dispose(){closeAccountDialog();lifecycle.abort();d.querySelectorAll("[data-owv-request-chat]").forEach(panel=>{if(panel.dataset.owvRequestChat===chat)panel.remove();});b.remove();connection.remove();execution.remove();menu.remove();connectionMenu.remove();modelMenu.remove();
       delete host.dataset.owvComposerControls;
       if(nativeText){if(nativeTextStyle===null)nativeText.removeAttribute('style');else if(nativeTextStyle!==undefined)nativeText.setAttribute('style',nativeTextStyle);}
       if(nativeTitle===null)native.removeAttribute('title');else native.setAttribute('title',nativeTitle);
